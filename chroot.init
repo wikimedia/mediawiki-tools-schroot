@@ -1,0 +1,64 @@
+#!/bin/sh
+
+### BEGIN INIT INFO
+# Provides:          @chroot_name@-chroot
+# Short-Description: schroot session and MediaWiki-related services
+# Description:       This init script starts a bundle of services in an
+#                    schroot session. On stop, it stops the session, which
+#                    sends SIGTERM to all processes running under it.
+### END INIT INFO
+
+. /lib/lsb/init-functions
+
+CHROOT_NAME=@chroot_name@
+SESSION_NAME="$CHROOT_NAME-session"
+INIT_NAME="$CHROOT_NAME-chroot"
+
+if [ -e /etc/default/$INIT_NAME ]; then
+	. /etc/default/$INIT_NAME
+fi
+
+do_start() {
+	log_daemon_msg "Starting $CHROOT_NAME chroot"
+	cd /
+	if ! schroot -c "$CHROOT_NAME" -n "$SESSION_NAME" -b > /dev/null
+	then
+		log_end_msg 1
+		return 1
+	fi
+	if  schroot -c "$SESSION_NAME" -r /etc/init.d/hhvm start && \
+		schroot -c "$SESSION_NAME" -r /etc/init.d/apache2 start && \
+		schroot -c "$SESSION_NAME" -r /etc/init.d/mysql start && \
+		schroot -c "$SESSION_NAME" -r /etc/init.d/memcached start
+	then
+		log_end_msg 0
+		return 0
+	else
+		schroot -c "$SESSION_NAME" -e
+		log_end_msg 1
+		return 1
+	fi
+}
+
+do_stop() {
+	log_daemon_msg "Stopping $CHROOT_NAME chroot"
+	schroot -c "$SESSION_NAME" -e
+	log_end_msg $?
+}
+
+case "$1" in
+	start)
+		do_start
+		;;
+	stop)
+		do_stop
+		;;
+	restart)
+		do_stop
+		sleep 1
+		do_start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+esac
+

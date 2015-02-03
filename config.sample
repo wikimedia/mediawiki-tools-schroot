@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Copy this file from config.sample to config and edit it to configure the
+# MediaWiki-schroot instance. Then run ./setup
+
+# The location of the MW core checkout on the host.
+mw_source_core="$HOME/src/mediawiki/core"
+
+# The location of the MW extensions checkout on the host
+mw_source_extensions="$HOME/src/mediawiki/extensions"
+
+# The location of the MW skins checkout on the host
+# This can be blank if you have your skins checked out at $mw_source_core/skins
+mw_source_skins="$HOME/src/mediawiki/skins"
+
+# The name of the chroot. This is used as the -c argument to schroot
+chroot_name=mw
+
+# The directory in which the chroot is stored. This will be created by
+# the script.
+chroot_directory="/srv/chroot/$chroot_name"
+
+# The distro, passed to debootstrap
+distro=trusty
+
+# The Debian/Ubuntu mirror used for downloading packages
+# If this is blank, some kind of sensible default will be used.
+mirror="http://archive.ubuntu.com/ubuntu"
+
+# The user account which will run untrusted code
+untrusted_user=www-data
+
+# The IP address that Apache will listen on. Using a special address inside the
+# 127.x.x.x subnet allows us to connect to it on port 80 without conflicting
+# with any webserver running on the host. We then set up a /etc/hosts entry
+# (see below) that gives us pretty URLs.
+# 
+# To use this feature, if there is a webserver on the host, configure it to
+# listen on some specific IP, such as 127.0.0.1, not on all source IPs.
+apache_ip=127.0.0.141
+
+# The hostname which will be placed in /etc/hosts
+apache_hostname=mw.localhost
+
+# The port that Apache will listen on
+apache_port=80
+
+# An array of packages that will be installed in the chroot
+declare -a packages
+
+# Any Apache MPM should do
+packages+=(apache2-mpm-worker)
+
+# The setup script is specific to HHVM, but could be made to work with PHP
+# with a few minor changes. hhvm-nightly could also be used here.
+packages+=(hhvm)
+
+# We use MariaDB to be consistent with WMF, but you could change this to 
+# mysql-server and it should all work the same. MariaDB basically pretends
+# to be MySQL, for example it installs a /etc/init.d/mysql script.
+packages+=(mariadb-server)
+
+# It's good to have an object cache in development, even if you don't need
+# performance, since some bugs may be exposed by having one. It'll listen on
+# 127.0.0.1:11211 by default.
+packages+=(memcached)
+
+# Tidy is essential for correct wikitext parsing
+packages+=(tidy)
+
+# You can edit files inside the chroot directly from the host, by prefixing
+# $chroot_directory to the path, but sometimes it's convenient to have an
+# editor inside the chroot. This is optional, and any editor could be used.
+packages+=(vim)
+
+declare -a components
+# This part is specific to Ubuntu: we need to enable the universe component
+# because that's where MariaDB is.
+components+=(main)
+components+=(universe)
+

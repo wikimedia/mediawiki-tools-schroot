@@ -1,0 +1,164 @@
+#!/bin/bash
+
+set -e
+
+schroot_source=$(dirname $0)
+
+if [ ! -e "$schroot_source/config" ]; then
+	cp "$schroot_source/config.sample" "$schroot_source/config"
+fi
+
+source "$schroot_source/config"
+
+if [ "$USER" != root ]; then
+	echo "Must be root"
+	exit 1
+fi
+
+# System users need to exist on the host, otherwise files in $chroot_directory
+# will be owned by unidentified numeric IDs. schroot copies /etc/passwd from
+# the host into the chroot by default.
+make_user() {
+	new_user="$1"
+	shift
+	if ! getent passwd "$new_user" >& /dev/null; then
+		addgroup --system "$new_user"
+		adduser --system --no-create-home --disabled-login "$@" "$new_user"
+	fi
+}
+
+make_user www-data
+make_user mysql
+make_user memcache
+
+# Get dependencies
+apt-get -qq -y --no-remove install debootstrap schroot
+
+# Initialise the chroot directory
+# We could use --include to install some of our custom packages here, but 
+# debootstrap doesn't use the host's passwd database, so any files created by
+# the preinst/postinst triggers would have the wrong ownership.
+if test -e "$chroot_directory/bin"; then
+	echo "The chroot seems to already be set up. Skipping debootstrap."
+else
+	IFS=,
+	debootstrap --components="${components[*]}" "$distro" "$chroot_directory" "$mirror"
+	IFS=' '
+fi
+
+# Set up schroot
+echo "[$chroot_name]
+type=directory
+description=MediaWiki server
+directory=$chroot_directory
+setup.fstab=$chroot_name/fstab
+" > "/etc/schroot/chroot.d/$chroot_name"
+
+# If SUDO_USER is set, grant that user access to the chroot
+if [ -n "$SUDO_USER" ]; then
+	echo "users=$SUDO_USER" >> "/etc/schroot/chroot.d/$chroot_name"
+fi
+
+test -e "/etc/schroot/$chroot_name" || mkdir "/etc/schroot/$chroot_name"
+
+# Create fstab
+# Unlike schroot's default fstab, we only bind the directories we really need,
+# not the whole of /home. schroot also binds /dev by default, but it's not really 
+# needed; debootstrap creates enough /dev files for MediaWiki.
+echo "
+/proc                  /proc               none rw,bind 0 0
+/sys                   /sys                none rw,bind 0 0
+$mw_source_core        /srv/mw/core        none rw,bind 0 0
+$mw_source_extensions  /srv/mw/extensions  none rw,bind 0 0
+" > "/etc/schroot/$chroot_name/fstab"
+
+if [ -n "$mw_source_skins" ]; then
+	echo "$mw_source_skins       /srv/mw/core/skins  none rw,bind 0 0" >> \
+		"/etc/schroot/$chroot_name/fstab"
+fi
+
+packages_string="${packages[*]}"
+
+# Run setup commands inside the new chroot
+schroot -c "$chroot_name" -d / -- sh <<END_SCRIPT
+	set -e
+
+	# Get HHVM keys
+	sudo apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0x5a16e7281be7a449
+
+	# Add HHVM repo
+	# We could use add-apt-repository for that, but that requires 42MB of
+	# dependencies, which seems a bit excessive to just write a text file
+	echo "deb http://dl.hhvm.com/ubuntu $distro main" > /etc/apt/sources.list.d/hhvm.list
+	apt-get update -qq
+
+	# Install packages
+	apt-get install -y --no-remove $packages_string
+
+	# Enable FastCGI etc.
+	a2enmod proxy
+	a2enmod proxy_fcgi
+	a2enmod alias
+	a2enmod rewrite
+
+	# Disable the default site that comes with Apache
+	a2dissite 000-default
+END_SCRIPT
+
+# Configure Apache
+echo "Listen $apache_ip:$apache_port
+ServerName $apache_hostname" > "$chroot_directory/etc/apache2/ports.conf"
+
+cat > "$chroot_directory/etc/apache2/sites-available/$apache_hostname"".conf" <<END_CONF
+<VirtualHost $apache_ip:$apache_port>
+	ServerName $apache_hostname
+	
+	DocumentRoot /srv/mw/core
+	Alias /extensions /srv/mw/extensions
+	Alias /images /data/mw/images
+	DirectoryIndex index.php
+	<Directory /srv/mw>
+		Order deny,allow
+		Satisfy Any
+		AllowOverride All
+	</Directory>
+	
+	ProxyPass /images !
+	ProxyPass /extensions !
+	ProxyPassMatch ^/(.*\\.php(/.*)?)$ fcgi://127.0.0.1:9000/srv/mw/core/\$1
+
+	RedirectMatch permanent ^/$ http://$apache_hostname
+</VirtualHost>
+END_CONF
+
+# Configure HHVM
+# session.save_path is /var/lib/php5 by default, but it doesn't exist.
+# See https://github.com/hhvm/packaging/issues/101
+install -d "$chroot_directory/var/lib/hhvm"
+chmod 01733 "$chroot_directory/var/lib/hhvm"
+sed -i "s/session.save_path *=.*/session.save_path=\/var\/lib\/hhvm/" \
+	"$chroot_directory/etc/hhvm/php.ini"
+
+# Enable the site
+schroot -c "$chroot_name" -d / -- a2ensite "$apache_hostname"
+
+# Install an init script on the host
+sed "s/@chroot_name@/$chroot_name/" "$schroot_source/chroot.init" > "/etc/init.d/$chroot_name-chroot"
+chmod a+x "/etc/init.d/$chroot_name-chroot"
+
+# Install a hosts file entry on the host if there isn't one already
+if ! grep -q "$apache_ip" /etc/hosts; then
+	echo "
+# MediaWiki schroot
+$apache_ip $apache_hostname" >> /etc/hosts
+fi
+
+echo "
+All done. You can start the server using 
+	/etc/init.d/$chroot_name-chroot start
+Then install MediaWiki by navigating to http://$apache_hostname/mw-config/
+
+MariaDB hostname: localhost
+Memcached: localhost:11211
+"
+
