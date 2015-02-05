@@ -1,0 +1,21 @@
+#!/bin/bash
+
+SOURCE_CORE_DIR="@mw_source_core@"
+CHROOT_NAME="@chroot_name@"
+
+rel_pwd=${PWD#$SOURCE_CORE_DIR}
+if [ "$rel_pwd" == "$PWD" ]; then
+	rel_pwd=
+fi
+
+script=$(readlink -f "$1")
+rel_script=${script#$SOURCE_CORE_DIR}
+if [ "$rel_script" == "$1" ]; then
+	echo "Script to run must be inside $SOURCE_CORE_DIR"
+	exit 1
+fi
+shift
+
+sudo schroot -c "$CHROOT_NAME"-session -u www-data -d "/srv/mw/core$rel_pwd" -r -- \
+	hhvm -c /etc/hhvm/server.ini "/srv/mw/core$rel_script" "$@"
+

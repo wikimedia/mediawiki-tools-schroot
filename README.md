@@ -59,6 +59,15 @@ can start a shell inside the chroot using:
 schroot -c mw-session
 ```
 
+To run a maintenance script inside the chroot as the appropriate unprivileged
+user, use the proxy script which is installed in /usr/local/bin/mw-maint:
+
+```
+mw-maint eval.php
+```
+
+Note that the schroot session must be started before you run this.
+
 ## Security
 
 Note that a chroot is, by its nature, less isolated from the host than a

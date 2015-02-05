@@ -153,6 +153,13 @@ if ! grep -q "$apache_ip" /etc/hosts; then
 $apache_ip $apache_hostname" >> /etc/hosts
 fi
 
+# Install a maintenance script proxy
+mw_maint="$(< $schroot_source/mw-maint)"
+mw_maint="${mw_maint/@mw_source_core@/$mw_source_core}"
+mw_maint="${mw_maint/@chroot_name@/$chroot_name}"
+echo "$mw_maint" > "/usr/local/bin/${chroot_name}-maint"
+chmod 755 "/usr/local/bin/${chroot_name}-maint"
+
 echo "
 All done. You can start the server using 
 	/etc/init.d/$chroot_name-chroot start
